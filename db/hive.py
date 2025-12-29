@@ -1,9 +1,10 @@
 from typing import Any, Optional
 
-from pyspark.sql import DataFrame, SparkSession
 import pandas as pd
+from pyspark.sql import SparkSession
 
 from .base import DatabaseConnector
+from .utils import build_spark_session
 
 
 class HiveConnector(DatabaseConnector):
@@ -20,19 +21,27 @@ class HiveConnector(DatabaseConnector):
         if self.spark:
             return  # Уже подключены
 
-        builder = SparkSession.builder.appName(app_name or "hive-connector").enableHiveSupport()
-        for key, value in (spark_conf or {}).items():
-            builder = builder.config(key, value)
-        self.spark = builder.getOrCreate()
+        self.spark = build_spark_session(
+            app_name=app_name or "hive-connector",
+            spark_conf=spark_conf,
+            enable_hive=True,
+        )
 
-    def read(self, query: str, params: Optional[dict] = None, **kwargs) -> DataFrame:
-        """Выполняет spark.sql(SELECT...) и возвращает DataFrame."""
-        query = query.format(**params)
-        return self.spark.sql(query)
+    def read(
+        self,
+        query: str,
+        params: Optional[dict] = None,
+        as_pandas: bool = True,
+        **kwargs,
+    ) -> Any:
+        """Выполняет spark.sql(SELECT...) и возвращает pandas.DataFrame или Spark DataFrame."""
+        query = query.format(**(params or {}))
+        spark_df = self.spark.sql(query)
+        return spark_df.toPandas() if as_pandas else spark_df
 
     def write(
         self,
-        sql: str,
+        sql: Optional[str] = None,
         df: Optional[Any] = None,
         target: Optional[str] = None,
         mode: str = "overwrite",
@@ -43,22 +52,28 @@ class HiveConnector(DatabaseConnector):
 
         Поддерживает передачу pandas.DataFrame: тогда происходит конвертация в Spark DataFrame.
         """
+        if sql:
+            self.spark.sql(sql)
+            return {"status": "ok"}
+
         if df is None:
             raise ValueError("Hive(Spark): df обязателен для записи")
 
         if target is None:
             raise ValueError("Hive(Spark): target обязателен для записи")
 
-        if sql:
-            self.spark.sql(sql)
-            return {"status": "ok"}
+        try:
+            from pyspark.sql import DataFrame as SparkDataFrame
+        except Exception:
+            SparkDataFrame = None  # type: ignore
 
-        if isinstance(df, pd.DataFrame):
-            df = self.spark.createDataFrame(df) # Конвертация pandas в Spark DataFrame
+        if SparkDataFrame is not None and isinstance(df, SparkDataFrame):
+            spark_df = df
+        elif isinstance(df, pd.DataFrame):
+            spark_df = self.spark.createDataFrame(df)  # Конвертация pandas в Spark DataFrame
+        else:
+            raise ValueError("Hive(Spark): df должен быть pandas.DataFrame или Spark DataFrame")
 
-        df.write.mode(mode).format('parquet').save(target)
+        spark_df.write.mode(mode).format("parquet").save(target)
 
         return {"status": "ok"}
-
-
-

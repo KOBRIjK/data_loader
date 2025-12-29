@@ -4,6 +4,7 @@ import pandas as pd
 import vertica_python
 
 from .base import DatabaseConnector
+from .utils import coerce_to_pandas_dataframe
 
 
 class VerticaConnector(DatabaseConnector):
@@ -35,7 +36,7 @@ class VerticaConnector(DatabaseConnector):
 
     def write(
         self,
-        sql: str,
+        sql: Optional[str] = None,
         df: Optional[Any] = None,
         table: Optional[str] = None,
         params: Optional[dict] = None,
@@ -46,25 +47,30 @@ class VerticaConnector(DatabaseConnector):
         """
 
         if df is not None:
-            # Поддерживаем Spark DataFrame: конвертация в pandas
-            try:
-                from pyspark.sql import DataFrame as SparkDataFrame
-
-                if isinstance(df, SparkDataFrame):
-                    df = df.toPandas()
-            except Exception:
-                # pyspark может отсутствовать — тогда считаем, что df уже pandas
-                pass
-
-            if not isinstance(df, pd.DataFrame):
-                raise ValueError("Vertica write ожидает pandas.DataFrame или Spark DataFrame в аргументе df")
+            df = coerce_to_pandas_dataframe(df)
 
             if not table:
                 raise ValueError("Для записи DataFrame в Vertica необходимо указать table")
 
-            # Записываем DataFrame в Vertica
+            columns = list(df.columns)
+            if not columns:
+                return {"rowcount": 0}
 
-        # Если df не передан, выполняем sql как DML
+            column_list = ", ".join(columns)
+            placeholders = ", ".join(["%s"] * len(columns))
+            insert_sql = f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})"
+            data = [tuple(row) for row in df.itertuples(index=False, name=None)]
+
+            with self.conn.cursor() as cursor:
+                cursor.executemany(insert_sql, data)
+                return {"rowcount": cursor.rowcount}
+
+        if not sql:
+            raise ValueError("Vertica write требует sql или df")
+
+        with self.conn.cursor() as cursor:
+            cursor.execute(sql, params or {})
+            return {"rowcount": cursor.rowcount}
 
     def close(self) -> None:
         """Закрывает соединение."""
