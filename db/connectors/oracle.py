@@ -6,6 +6,7 @@ import pandas as pd
 
 from .base import DatabaseConnector
 from ..utils.dataframe import coerce_to_pandas_dataframe
+from ..utils.oracle import df_to_table
 
 
 class OracleConnector(DatabaseConnector):
@@ -64,22 +65,7 @@ class OracleConnector(DatabaseConnector):
             if not table:
                 raise ValueError("Для записи DataFrame в Oracle необходимо указать table")
 
-            columns = list(df.columns)
-            if not columns:
-                return {"rowcount": 0}
-
-            column_list = ", ".join(columns)
-            bind_list = ", ".join(f":{col}" for col in columns)
-            insert_sql = f"INSERT INTO {table} ({column_list}) VALUES ({bind_list})"
-            data = df.to_dict(orient="records")
-
-            cursor = self.conn.cursor()
-            try:
-                cursor.executemany(insert_sql, data)
-                self.conn.commit()
-                return {"rowcount": cursor.rowcount}
-            finally:
-                cursor.close()
+            return df_to_table(self.conn, df, table)
 
         if not sql:
             raise ValueError("Oracle write требует sql или df")
