@@ -1,10 +1,14 @@
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 import pandas as pd
-from pyspark.sql import SparkSession
 
 from .base import DatabaseConnector
 from .utils import build_spark_session
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
+else:
+    SparkSession = Any  # type: ignore
 
 
 class HiveConnector(DatabaseConnector):

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 import pandas as pd
-from pyspark.sql import SparkSession
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
 
 
 def build_spark_session(
@@ -12,7 +14,12 @@ def build_spark_session(
     app_name: str,
     spark_conf: Optional[dict] = None,
     enable_hive: bool = False,
-) -> SparkSession:
+) -> "SparkSession":
+    if importlib.util.find_spec("pyspark") is None:
+        raise ImportError("pyspark не установлен")
+
+    from pyspark.sql import SparkSession
+
     builder = SparkSession.builder.appName(app_name)
     if enable_hive:
         builder = builder.enableHiveSupport()
@@ -22,7 +29,7 @@ def build_spark_session(
 
 
 def configure_s3_access(
-    spark: SparkSession,
+    spark: "SparkSession",
     *,
     aws_access_key_id: Optional[str] = None,
     aws_secret_access_key: Optional[str] = None,
