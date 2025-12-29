@@ -1,9 +1,10 @@
 from typing import Dict, Any
+
 from .base import DatabaseConnector
-from .oracle import OracleConnector
 from .hive import HiveConnector
-from .vertica import VerticaConnector
+from .oracle import OracleConnector
 from .s3_store import S3Connector
+from .vertica import VerticaConnector
 
 _MAP = {
     "oracle": OracleConnector,

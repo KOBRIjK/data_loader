@@ -8,14 +8,14 @@ class DatabaseConnector(ABC):
     read/write принимают SQL или другую команду в зависимости от реализации.
     """
     @abstractmethod
-    def read(self, query: str, bucket: str, key: str, params: Optional[dict] = None, **kwargs) -> Any:
-        """Возвращает данные по запросу. params — словарь параметров SQL (если нужен)."""
+    def read(self, query: Optional[str] = None, params: Optional[dict] = None, **kwargs) -> Any:
+        """Возвращает данные по запросу в виде pandas.DataFrame."""
         ...
 
     @abstractmethod
     def write(
         self,
-        sql: str,
+        sql: Optional[str] = None,
         df: Optional[Any] = None,
         target: Optional[str] = None,
         table: Optional[str] = None
