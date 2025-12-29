@@ -69,6 +69,7 @@ class FakeOracleCursor:
         self.execute_sql = None
         self.execute_params = None
         self.rowcount = 0
+        self.metadata_rows = []
 
     def executemany(self, sql: str, data: list[dict]) -> None:
         self.executemany_sql = sql
@@ -79,6 +80,9 @@ class FakeOracleCursor:
         self.execute_sql = sql
         self.execute_params = params
         self.rowcount = 1
+
+    def fetchall(self) -> list[tuple[str, str]]:
+        return list(self.metadata_rows)
 
     def close(self) -> None:
         return None
@@ -216,15 +220,16 @@ def test_s3_write_requires_pandas_df():
 
 def test_oracle_write_dataframe_inserts():
     cursor = FakeOracleCursor()
+    cursor.metadata_rows = [("ID", "NUMBER"), ("NAME", "VARCHAR2")]
     conn = FakeOracleConnection(cursor)
     connector = OracleConnector(conn=conn)
-    df = pd.DataFrame({"id": [1, 2], "name": ["a", "b"]})
+    df = pd.DataFrame({"name": ["a", "b"], "id": ["1", "2"]})
 
     result = connector.write(df=df, table="target_table")
 
     assert result["rowcount"] == 2
-    assert cursor.executemany_sql == "INSERT INTO target_table (id, name) VALUES (:id, :name)"
-    assert cursor.executemany_data == [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+    assert cursor.executemany_sql == "INSERT INTO target_table (ID, NAME) VALUES (:ID, :NAME)"
+    assert cursor.executemany_data == [{"ID": 1, "NAME": "a"}, {"ID": 2, "NAME": "b"}]
     assert conn.committed is True
 
 
