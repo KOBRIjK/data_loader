@@ -1,9 +1,14 @@
-from typing import Any, Optional, Dict
+from typing import Any, Optional, TYPE_CHECKING
 
-from pyspark.sql import SparkSession
 import pandas as pd
 
 from .base import DatabaseConnector
+from ..utils.spark import build_spark_session, configure_s3_access
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
+else:
+    SparkSession = Any  # type: ignore
 
 
 class S3Connector(DatabaseConnector):
@@ -23,31 +28,34 @@ class S3Connector(DatabaseConnector):
         if self.spark:
             return  # Уже подключены
 
-        builder = SparkSession.builder.appName(app_name or "s3-connector")
-        for key, value in (spark_conf or {}).items():
-            builder = builder.config(key, value)
-        self.spark = builder.getOrCreate()
+        self.spark = build_spark_session(
+            app_name=app_name or "s3-connector",
+            spark_conf=spark_conf,
+        )
+        configure_s3_access(
+            self.spark,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+        )
 
-        if aws_access_key_id and aws_secret_access_key:
-            jsc = getattr(self.spark.sparkContext, "_jsc", None)
-            if jsc is not None:
-                hadoop_conf = jsc.hadoopConfiguration()
-                hadoop_conf.set("fs.s3a.access.key", aws_access_key_id)
-                hadoop_conf.set("fs.s3a.secret.key", aws_secret_access_key)
-                if aws_session_token:
-                    hadoop_conf.set("fs.s3a.session.token", aws_session_token)
-
-    def read(self, bucket: str, key: str, **kwargs) -> Any:
-        """Читает parquet-файл из S3 в DataFrame."""
+    def read(
+        self,
+        query: Optional[str] = None,
+        bucket: Optional[str] = None,
+        key: Optional[str] = None,
+        **kwargs,
+    ) -> Any:
+        """Читает parquet-файл из S3 в pandas.DataFrame."""
         if not bucket or not key:
             raise ValueError("Поля bucket и key обязательны для чтения из S3")
 
         s3_path = f"s3a://{bucket}/{key}"
-        return self.spark.read.parquet(s3_path)
+        return self.spark.read.parquet(s3_path).toPandas()
 
     def write(
         self,
-        sql: str,
+        sql: Optional[str] = None,
         df: Optional[Any] = None,
         target: Optional[str] = None,
         table: Optional[str] = None,
@@ -58,9 +66,9 @@ class S3Connector(DatabaseConnector):
         if df is None:
             raise ValueError("S3 write ожидает DataFrame в аргументе df")
 
-        # Если передан pandas DataFrame — конвертируем в Spark DataFrame
-        if isinstance(df, pd.DataFrame):
-            df = self.spark.createDataFrame(df)
+        if not isinstance(df, pd.DataFrame):
+            raise ValueError("S3 write ожидает pandas.DataFrame")
 
-        df.write.mode(mode).parquet(target)
+        spark_df = self.spark.createDataFrame(df)
+        spark_df.write.mode(mode).parquet(target)
         return {"target": target, "mode": mode}
