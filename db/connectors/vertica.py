@@ -1,10 +1,11 @@
 from typing import Any, Optional
 
 import pandas as pd
-import vertica_python
+from sqlalchemy import create_engine, text
 
 from .base import DatabaseConnector
 from ..utils.dataframe import coerce_to_pandas_dataframe
+from ..utils.vertica import df_to_table
 
 
 class VerticaConnector(DatabaseConnector):
@@ -20,15 +21,14 @@ class VerticaConnector(DatabaseConnector):
         password: Optional[str] = None,
         database: Optional[str] = None,
     ) -> None:
-        """Создает соединение через vertica_python.connect(**conn_info)."""
-        conn_info = {
-            "host": host,
-            "port": port,
-            "user": user,
-            "password": password,
-            "database": database,
-        }
-        self.conn = vertica_python.connect(**conn_info)
+        """Создает соединение через SQLAlchemy Engine."""
+        if not user or not password:
+            raise ValueError("Нужно указать user и password")
+        if not host or not database:
+            raise ValueError("Нужно указать host и database")
+        self.conn = create_engine(
+            f"vertica+vertica_python://{user}:{password}@{host}:{port}/{database}"
+        )
 
     def read(self, query: str, params: Optional[dict] = None, **kwargs) -> Any:
         """Выполняет SELECT и возвращает DataFrame."""
@@ -51,31 +51,19 @@ class VerticaConnector(DatabaseConnector):
 
             if not table:
                 raise ValueError("Для записи DataFrame в Vertica необходимо указать table")
-
-            columns = list(df.columns)
-            if not columns:
-                return {"rowcount": 0}
-
-            column_list = ", ".join(columns)
-            placeholders = ", ".join(["%s"] * len(columns))
-            insert_sql = f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})"
-            data = [tuple(row) for row in df.itertuples(index=False, name=None)]
-
-            with self.conn.cursor() as cursor:
-                cursor.executemany(insert_sql, data)
-                return {"rowcount": cursor.rowcount}
+            return df_to_table(self.conn, df, table)
 
         if not sql:
             raise ValueError("Vertica write требует sql или df")
 
-        with self.conn.cursor() as cursor:
-            cursor.execute(sql, params or {})
-            return {"rowcount": cursor.rowcount}
+        with self.conn.begin() as connection:
+            result = connection.execute(text(sql), params or {})
+            return {"rowcount": result.rowcount}
 
     def close(self) -> None:
         """Закрывает соединение."""
         if self.conn:
             try:
-                self.conn.close()
+                self.conn.dispose()
             finally:
                 self.conn = None

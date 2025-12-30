@@ -62,38 +62,50 @@ class FakeSparkSession:
         return self._spark_df
 
 
-class FakeOracleCursor:
-    def __init__(self) -> None:
-        self.executemany_sql = None
-        self.executemany_data = None
-        self.execute_sql = None
-        self.execute_params = None
-        self.rowcount = 0
+class FakeResult:
+    def __init__(self, rows: list[tuple[str, str]] | None = None, rowcount: int = 0) -> None:
+        self._rows = rows or []
+        self.rowcount = rowcount
 
-    def executemany(self, sql: str, data: list[dict]) -> None:
-        self.executemany_sql = sql
-        self.executemany_data = data
-        self.rowcount = len(data)
+    def fetchall(self) -> list[tuple[str, str]]:
+        return list(self._rows)
 
-    def execute(self, sql: str, params: dict) -> None:
-        self.execute_sql = sql
-        self.execute_params = params
-        self.rowcount = 1
+    def scalar(self) -> str | None:
+        if not self._rows:
+            return None
+        return self._rows[0][0]
 
-    def close(self) -> None:
+class FakeTransaction:
+    def __enter__(self) -> "FakeTransaction":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
 
 class FakeOracleConnection:
-    def __init__(self, cursor: FakeOracleCursor) -> None:
-        self._cursor = cursor
-        self.committed = False
+    def __init__(self) -> None:
+        self.executed_sql = []
+        self.executed_params = []
+        self.metadata_rows = []
+        self.to_sql_calls = []
 
-    def cursor(self) -> FakeOracleCursor:
-        return self._cursor
+    def begin(self) -> FakeTransaction:
+        return FakeTransaction()
 
-    def commit(self) -> None:
-        self.committed = True
+    def execute(self, sql: object, params: dict | list[dict]) -> FakeResult:
+        sql_text = str(sql)
+        self.executed_sql.append(sql_text)
+        self.executed_params.append(params)
+        if "current_schema" in sql_text:
+            return FakeResult(rows=[("public",)])
+        if "user_tab_columns" in sql_text or "all_tab_columns" in sql_text:
+            return FakeResult(rows=self.metadata_rows)
+        if "v_catalog.columns" in sql_text:
+            return FakeResult(rows=self.metadata_rows)
+        if isinstance(params, list):
+            return FakeResult(rowcount=len(params))
+        return FakeResult(rowcount=1)
 
 
 class FakeVerticaCursor:
@@ -215,27 +227,80 @@ def test_s3_write_requires_pandas_df():
 
 
 def test_oracle_write_dataframe_inserts():
-    cursor = FakeOracleCursor()
-    conn = FakeOracleConnection(cursor)
+    conn = FakeOracleConnection()
+    conn.metadata_rows = [("ID", "NUMBER"), ("NAME", "VARCHAR2")]
     connector = OracleConnector(conn=conn)
-    df = pd.DataFrame({"id": [1, 2], "name": ["a", "b"]})
+    df = pd.DataFrame({"name": ["a", "b"], "id": ["1", "2"]})
+    original_to_sql = pd.DataFrame.to_sql
 
-    result = connector.write(df=df, table="target_table")
+    def fake_to_sql(self, name, con, schema=None, if_exists=None, index=None, method=None):
+        con.to_sql_calls.append(
+            {
+                "name": name,
+                "schema": schema,
+                "if_exists": if_exists,
+                "index": index,
+                "method": method,
+                "columns": list(self.columns),
+                "rows": self.to_dict(orient="records"),
+            }
+        )
+
+    pd.DataFrame.to_sql = fake_to_sql
+    try:
+        result = connector.write(df=df, table="target_table")
+    finally:
+        pd.DataFrame.to_sql = original_to_sql
 
     assert result["rowcount"] == 2
-    assert cursor.executemany_sql == "INSERT INTO target_table (id, name) VALUES (:id, :name)"
-    assert cursor.executemany_data == [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
-    assert conn.committed is True
+    assert conn.to_sql_calls == [
+        {
+            "name": "target_table",
+            "schema": None,
+            "if_exists": "append",
+            "index": False,
+            "method": "multi",
+            "columns": ["ID", "NAME"],
+            "rows": [{"ID": 1, "NAME": "a"}, {"ID": 2, "NAME": "b"}],
+        }
+    ]
 
 
 def test_vertica_write_dataframe_inserts():
-    cursor = FakeVerticaCursor()
-    conn = FakeVerticaConnection(cursor)
+    conn = FakeOracleConnection()
+    conn.metadata_rows = [("id", "int"), ("name", "varchar")]
     connector = VerticaConnector(conn=conn)
-    df = pd.DataFrame({"id": [1], "name": ["a"]})
+    df = pd.DataFrame({"name": ["a"], "id": [1]})
+    original_to_sql = pd.DataFrame.to_sql
 
-    result = connector.write(df=df, table="target_table")
+    def fake_to_sql(self, name, con, schema=None, if_exists=None, index=None, method=None):
+        con.to_sql_calls.append(
+            {
+                "name": name,
+                "schema": schema,
+                "if_exists": if_exists,
+                "index": index,
+                "method": method,
+                "columns": list(self.columns),
+                "rows": self.to_dict(orient="records"),
+            }
+        )
+
+    pd.DataFrame.to_sql = fake_to_sql
+    try:
+        result = connector.write(df=df, table="target_table")
+    finally:
+        pd.DataFrame.to_sql = original_to_sql
 
     assert result["rowcount"] == 1
-    assert cursor.executemany_sql == "INSERT INTO target_table (id, name) VALUES (%s, %s)"
-    assert cursor.executemany_data == [(1, "a")]
+    assert conn.to_sql_calls == [
+        {
+            "name": "target_table",
+            "schema": None,
+            "if_exists": "append",
+            "index": False,
+            "method": "multi",
+            "columns": ["id", "name"],
+            "rows": [{"id": 1, "name": "a"}],
+        }
+    ]

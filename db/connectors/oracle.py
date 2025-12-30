@@ -1,11 +1,11 @@
 from typing import Any, Optional
 
-import importlib.util
-
 import pandas as pd
+from sqlalchemy import create_engine, text
 
 from .base import DatabaseConnector
 from ..utils.dataframe import coerce_to_pandas_dataframe
+from ..utils.oracle import df_to_table
 
 
 class OracleConnector(DatabaseConnector):
@@ -22,27 +22,21 @@ class OracleConnector(DatabaseConnector):
         user: Optional[str] = None,
         password: Optional[str] = None,
     ) -> None:
-        """Подключается через cx_Oracle (dsn/user/password или host/port/service)."""
+        """Подключается через SQLAlchemy (dsn/user/password или host/port/service)."""
         if self.conn:
             return
-
-        if importlib.util.find_spec("cx_Oracle") is None:
-            raise ImportError("cx_Oracle не установлен")
-
-        import cx_Oracle
-
-        if dsn:
-            dsn_value = dsn
-        elif host and service:
-            dsn_value = cx_Oracle.makedsn(host, port, service_name=service)
-        else:
-            raise ValueError("Нужно указать dsn или host/service")
 
         if not user or not password:
             raise ValueError("Нужно указать user и password")
 
-        self.conn = cx_Oracle.connect(user=user, password=password, dsn=dsn_value)
+        if dsn:
+            dsn_value = dsn
+        elif host and service:
+            dsn_value = f"{host}:{port}/{service}"
+        else:
+            raise ValueError("Нужно указать dsn или host/service")
 
+        self.conn = create_engine(f"oracle+cx_oracle://{user}:{password}@{dsn_value}")
 
     def read(self, query: str, params: Optional[dict] = None, **kwargs) -> Any:
         """Выполняет SELECT и возвращает DataFrame."""
@@ -64,30 +58,11 @@ class OracleConnector(DatabaseConnector):
             if not table:
                 raise ValueError("Для записи DataFrame в Oracle необходимо указать table")
 
-            columns = list(df.columns)
-            if not columns:
-                return {"rowcount": 0}
-
-            column_list = ", ".join(columns)
-            bind_list = ", ".join(f":{col}" for col in columns)
-            insert_sql = f"INSERT INTO {table} ({column_list}) VALUES ({bind_list})"
-            data = df.to_dict(orient="records")
-
-            cursor = self.conn.cursor()
-            try:
-                cursor.executemany(insert_sql, data)
-                self.conn.commit()
-                return {"rowcount": cursor.rowcount}
-            finally:
-                cursor.close()
+            return df_to_table(self.conn, df, table)
 
         if not sql:
             raise ValueError("Oracle write требует sql или df")
 
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(sql, params or {})
-            self.conn.commit()
-            return {"rowcount": cursor.rowcount}
-        finally:
-            cursor.close()
+        with self.conn.begin() as connection:
+            result = connection.execute(text(sql), params or {})
+            return {"rowcount": result.rowcount}
