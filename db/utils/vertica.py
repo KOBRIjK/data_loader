@@ -7,26 +7,28 @@ from sqlalchemy import text
 
 
 _NUMERIC_TYPES = {
-    "NUMBER",
-    "FLOAT",
-    "BINARY_FLOAT",
-    "BINARY_DOUBLE",
+    "INT",
     "INTEGER",
+    "SMALLINT",
+    "BIGINT",
     "DECIMAL",
+    "NUMERIC",
+    "FLOAT",
+    "FLOAT8",
+    "DOUBLE",
+    "DOUBLE PRECISION",
+    "REAL",
 }
 _DATETIME_TYPES = {
     "DATE",
+    "TIME",
     "TIMESTAMP",
-    "TIMESTAMP WITH TIME ZONE",
-    "TIMESTAMP WITH LOCAL TIME ZONE",
+    "TIMESTAMPTZ",
 }
 _STRING_TYPES = {
     "CHAR",
-    "NCHAR",
-    "VARCHAR2",
-    "NVARCHAR2",
-    "CLOB",
-    "NCLOB",
+    "VARCHAR",
+    "LONG VARCHAR",
 }
 
 
@@ -39,23 +41,19 @@ def _split_table_name(table: str) -> tuple[str | None, str]:
 
 def _fetch_table_columns(conn: Any, table: str) -> list[tuple[str, str]]:
     schema, table_name = _split_table_name(table)
-    if schema:
-        query = (
-            "SELECT column_name, data_type "
-            "FROM all_tab_columns "
-            "WHERE owner = :owner AND table_name = :table_name "
-            "ORDER BY column_id"
-        )
-        params = {"owner": schema.upper(), "table_name": table_name.upper()}
-    else:
-        query = (
-            "SELECT column_name, data_type "
-            "FROM user_tab_columns "
-            "WHERE table_name = :table_name "
-            "ORDER BY column_id"
-        )
-        params = {"table_name": table_name.upper()}
-    result = conn.execute(text(query), params)
+    if schema is None:
+        schema_result = conn.execute(text("SELECT current_schema()"))
+        schema = schema_result.scalar()
+    query = (
+        "SELECT column_name, data_type "
+        "FROM v_catalog.columns "
+        "WHERE table_schema = :schema AND table_name = :table_name "
+        "ORDER BY ordinal_position"
+    )
+    result = conn.execute(
+        text(query),
+        {"schema": schema, "table_name": table_name},
+    )
     return [(row[0], row[1]) for row in result.fetchall()]
 
 
@@ -81,8 +79,8 @@ def _prepare_dataframe(df: pd.DataFrame, columns: Iterable[tuple[str, str]]) -> 
     prepared = df[[df_columns_map[col.upper()] for col in ordered_columns]].copy()
     prepared.columns = ordered_columns
 
-    oracle_types = {column_name: data_type for column_name, data_type in columns}
-    for column_name, data_type in oracle_types.items():
+    vertica_types = {column_name: data_type for column_name, data_type in columns}
+    for column_name, data_type in vertica_types.items():
         if column_name not in prepared.columns:
             continue
         normalized_type = data_type.upper()
